@@ -31,6 +31,16 @@ def get_json(path, params=None):
     return r.json()
 
 
+def get_aud_rate():
+    try:
+        r = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        return safe_float(data["rates"]["AUD"], 1.5)
+    except Exception:
+        return 1.5
+
+
 def fetch_24h_tickers():
     return get_json("/api/v3/ticker/24hr")
 
@@ -143,6 +153,22 @@ def score_candidate(t, s):
     return score
 
 
+def display_score(raw_score):
+    # Converts V8's existing raw score to an easy 0–100 rating.
+    # This does NOT change which coin is selected.
+    return max(0, min(round((raw_score / 45) * 100), 100))
+
+
+def score_grade(score):
+    if score >= 80:
+        return "HIGH QUALITY"
+    if score >= 65:
+        return "DECENT WATCH"
+    if score >= 50:
+        return "EARLY / NEEDS CONFIRMATION"
+    return "LOW QUALITY"
+
+
 def price_plan(price):
     entry_low = price * 0.995
     entry_high = price * 1.005
@@ -155,7 +181,7 @@ def price_plan(price):
     return entry_low, entry_high, stop, t1, t2, t3
 
 
-def build_alert(c):
+def build_alert(c, aud_rate):
     t = c["ticker"]
     s = c["structure"]
 
@@ -165,14 +191,19 @@ def build_alert(c):
     qvol = safe_float(t.get("quoteVolume")) / 1_000_000
     trades = int(safe_float(t.get("count")))
 
+    raw_score = safe_float(c.get("score"))
+    shown_score = display_score(raw_score)
+    shown_grade = score_grade(shown_score)
+
     entry_low, entry_high, stop, t1, t2, t3 = price_plan(price)
 
     return (
         "🏁 V8 MUSCLE — BEST Daily Riser Candidate\n\n"
         f"{symbol}\n"
-        f"Current: {fmt_price(price)}\n"
+        f"Score: {shown_score}/100 — {shown_grade}\n\n"
+        f"Current: {fmt_price(price)} USDT / ${fmt_price(price * aud_rate)} AUD\n"
         f"24h: {pct:+.1f}%\n"
-        f"Volume: ${qvol:.1f}M\n"
+        f"Volume: ${qvol:.1f}M USDT\n"
         f"Trades: {trades:,}\n\n"
         "WHY THIS ONE\n"
         f"15m/1h momentum: {s['move_1h']:+.1f}%\n"
@@ -181,17 +212,19 @@ def build_alert(c):
         f"Compression: {s['compression_ratio']:.2f}\n"
         f"Near recent high: {s['distance_from_high']:.1f}% away\n\n"
         "PLAN\n"
-        f"Entry zone: {fmt_price(entry_low)} – {fmt_price(entry_high)}\n"
-        f"Stop / invalidation: below {fmt_price(stop)}\n\n"
-        f"Target 1: {fmt_price(t1)} (+10%)\n"
-        f"Target 2: {fmt_price(t2)} (+20%)\n"
-        f"Stretch: {fmt_price(t3)} (+30%)\n\n"
+        f"Entry zone: {fmt_price(entry_low)} – {fmt_price(entry_high)} USDT\n"
+        f"            ${fmt_price(entry_low * aud_rate)} – ${fmt_price(entry_high * aud_rate)} AUD\n"
+        f"Stop / invalidation: below {fmt_price(stop)} USDT / ${fmt_price(stop * aud_rate)} AUD\n\n"
+        f"Target 1: {fmt_price(t1)} USDT / ${fmt_price(t1 * aud_rate)} AUD (+10%)\n"
+        f"Target 2: {fmt_price(t2)} USDT / ${fmt_price(t2 * aud_rate)} AUD (+20%)\n"
+        f"Stretch: {fmt_price(t3)} USDT / ${fmt_price(t3 * aud_rate)} AUD (+30%)\n\n"
         "Management idea: take some profit at T1, protect the rest.\n"
         "Watchlist only. Not financial advice."
     )
 
 
 def main():
+    aud_rate = get_aud_rate()
     data = fetch_24h_tickers()
 
     if not isinstance(data, list):
@@ -262,7 +295,7 @@ def main():
         return
 
     best = candidates[0]
-    send_telegram(build_alert(best))
+    send_telegram(build_alert(best, aud_rate))
 
 
 if __name__ == "__main__":
